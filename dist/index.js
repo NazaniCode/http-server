@@ -1,5 +1,6 @@
 import express from "express";
 import { config } from './config.js';
+import { BadRequestsError } from "./errors.js";
 const app = express();
 const PORT = 8080;
 app.use(middlewareLogResponses);
@@ -11,6 +12,8 @@ app.get("/admin/metrics", writeNumRequests);
 app.post("/admin/reset", resetNumRequests);
 app.get("/api/healthz", handlerReadiness);
 app.post("/api/validate_chirp", validateChirpHandler);
+//Error handler SHOULD COME AFTER ALL OTHER API ENDPOINTS BEFORE LISTEN
+app.use(errorHandler);
 app.listen(PORT, () => {
     console.log(`Server is running at http://localhost:${PORT}`);
 });
@@ -50,14 +53,19 @@ function resetNumRequests(req, res, next) {
     res.send("OK");
     next();
 }
-async function validateChirpHandler(req, res) {
+async function validateChirpHandler(req, res, next) {
     res.set("Content-Type", "application/json");
-    const parsedBody = req.body;
-    if (parsedBody.body.length > 140) {
-        res.status(400).send({ "error": "Chirp is too long" });
+    try {
+        const parsedBody = req.body;
+        if (parsedBody.body.length > 140) {
+            throw new BadRequestsError("Chirp is too long. Max length is 140");
+        }
+        else {
+            res.status(200).send({ "cleanedBody": censorString(parsedBody.body) });
+        }
     }
-    else {
-        res.status(200).send({ "cleanedBody": censorString(parsedBody.body) });
+    catch (err) {
+        next(err);
     }
 }
 function censorString(str) {
@@ -69,4 +77,11 @@ function censorString(str) {
         }
     }
     return split.join(" ");
+}
+function errorHandler(err, req, res, next) {
+    console.log(err);
+    if (err instanceof BadRequestsError) {
+        res.status(400).send({ "error": `${err.message}` });
+    }
+    res.status(500).send();
 }
