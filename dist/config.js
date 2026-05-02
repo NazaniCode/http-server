@@ -9,6 +9,7 @@ export function envOrThrow(key) {
 const apiConfig = {
     fileserverHits: 0,
     platform: envOrThrow("PLATFORM"),
+    polkaKey: envOrThrow("POLKA_KEY")
 };
 const migrationConfig = {
     migrationsFolder: "./src/db/migrations",
@@ -19,5 +20,6 @@ const dbConfig = {
 };
 export const config = {
     apiConfig: apiConfig,
-    dbConfig: dbConfig
+    dbConfig: dbConfig,
+    JWTSecret: envOrThrow("JWT_SECRET"),
 };

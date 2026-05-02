@@ -53,5 +53,14 @@ function errorHandler(
   if (err instanceof BadRequestsError) {
     res.status(400).send({ "error": `${err.message}` });
   }
+  if (err instanceof UnauthorizedError) {
+    res.status(401).send({ "error": `${err.message}` })
+  }
+  if (err instanceof ForbiddenError) {
+    res.status(403).send({ "error": `${err.message}` })
+  }
+  if (err instanceof NotFoundError) {
+    res.status(404).send({ "error": `${err.message}` })
+  }
   res.status(500).send();
 }

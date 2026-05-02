@@ -10,7 +10,7 @@
     "dev": "npm run build && npm run start",
     "generate": "drizzle-kit generate",
     "migrate": "drizzle-kit migrate",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest --run"
   },
   "repository": {
     "type": "git",
@@ -25,13 +25,17 @@
   "homepage": "https://github.com/NazaniCode/http-server#readme",
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.6.0",
     "drizzle-kit": "^0.31.10",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
   },
   "dependencies": {
+    "argon2": "^0.44.0",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "postgres": "^3.4.9"
   }
 }

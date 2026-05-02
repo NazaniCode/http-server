@@ -3,7 +3,9 @@ import { config } from "./config.js"
 import { BadRequestsError, UnauthorizedError, ForbiddenError, NotFoundError } from "./errors.js";
 import * as usersQueries from "./db/queries/users.js";
 import * as chirpQueries from "./db/queries/chirps.js";
-import { NewChirp } from "./db/schema.js";
+import { NewChirp, NewRefreshToken, NewUser, users } from "./db/schema.js";
+import { hashPassword, checkPasswordHash as checkPasswordHash, makeJWT, getBearerToken, validateJWTandReturnUserID, generateRefreshToken, getAPIKey } from "./auth.js";
+import { check } from "drizzle-orm/gel-core";
 
 export const apiRouter = Router();
 
@@ -13,13 +15,18 @@ apiRouter.post("/admin/reset", resetContent);
 apiRouter.get("/api/healthz", handlerReadiness);
 apiRouter.post("/api/users", createUser);
 apiRouter.get("/api/users", getUsers);
+apiRouter.put("/api/users", updateUserDetails);
 apiRouter.post("/api/chirps", createChirp);
 apiRouter.get("/api/chirps", getChirps);
+apiRouter.post("/api/login", userLogin);
+apiRouter.post("/api/refresh", getAccessTokenFromRefreshToken);
+apiRouter.post("/api/revoke", revokeRefreshToken);
 
-interface ChirpParams {
-  chirpId: string;
-}
 apiRouter.get("/api/chirps/:chirpId", getChirps);
+apiRouter.delete("/api/chirps/:chirpId", deleteChirp);
+
+// Webhooks
+apiRouter.post("/api/polka/webhooks", upgradeUser);
 
 function handlerReadiness(req: Request, res: Response) {
   res.set("Content-Type", "text/plain; charset=utf-8");
@@ -47,7 +54,7 @@ async function resetContent(req: Request, res: Response, next: NextFunction) {
   res.set("Content-Type", "text/plain; charset=utf-8");
 
   if (config.apiConfig.platform !== "dev") {
-    res.status(403).send("NOT OK");
+    throw new ForbiddenError("NOT OK");
   }
 
   try {
@@ -63,16 +70,22 @@ async function createUser(req: Request, res: Response, next: NextFunction) {
   res.set("Content-Type", "application/json");
   type requestData = {
     "email": string;
+    "password": string;
   };
   try {
     const parsedBody: requestData = await req.body;
     const email = parsedBody.email;
-    const newUser = await usersQueries.createUser({ email: email });
+    const password = await hashPassword(parsedBody.password);
+    const newUser = await usersQueries.createUser({ email: email, hashedPassword: password });
+    if (!newUser) {
+      throw new ForbiddenError("Could not create user. Email may already exist");
+    }
     const response = {
       "id": newUser.id,
       "email": newUser.email,
       "createdAt": newUser.createdAt,
-      "updatedAt": newUser.updatedAt
+      "updatedAt": newUser.updatedAt,
+      "isChirpyRed": newUser.isChirpyRed
     }
     res.status(201).send(response);
   } catch (err) {
@@ -91,7 +104,38 @@ async function getUsers(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-async function resetUsers(req: Request, res: Response, next: NextFunction) {
+async function updateUserDetails(req: Request, res: Response, next: NextFunction) {
+  res.set("Content-Type", "application/json");
+
+  try {
+    const accessToken = getBearerToken(req);
+    const userId = validateJWTandReturnUserID(accessToken, config.JWTSecret);
+
+    type requestData = {
+      password: string,
+      email: string
+    }
+    const requestBody: requestData = await req.body;
+
+    const newDetails: { email: string, hashedPassword: string } = {
+      email: requestBody.email,
+      hashedPassword: await hashPassword(requestBody.password)
+    }
+    const updatedUser = await usersQueries.updateUser(userId, newDetails);
+
+    const response = {
+      "id": updatedUser.id,
+      "email": updatedUser.email,
+      "createdAt": updatedUser.createdAt,
+      "updatedAt": updatedUser.updatedAt,
+      "isChirpyRed": updatedUser.isChirpyRed
+    }
+
+    res.status(200).send(response);
+
+  } catch (err) {
+    next(err);
+  }
 }
 
 function censorString(str: string) {
@@ -111,12 +155,12 @@ async function createChirp(req: Request, res: Response, next: NextFunction) {
   res.set("Content-Type", "application/json");
   type requestData = {
     "body": string,
-    "userId": string
   }
 
   try {
     const parsedBody: requestData = await req.body;
-    const userId = parsedBody.userId;
+    const jwtToken = getBearerToken(req);
+    const userId = validateJWTandReturnUserID(jwtToken, config.JWTSecret)
     const chirpBody = parsedBody.body;
     if (chirpBody.length > 140) {
       throw new BadRequestsError("Chirp is too long. Max length is 140");
@@ -136,20 +180,175 @@ async function createChirp(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-async function getChirps(req: Request<ChirpParams>, res: Response, next: NextFunction) {
+async function getChirps(req: Request, res: Response, next: NextFunction) {
   res.set("Content-Type", "application/json");
 
   try {
-    if (req.params.chirpId) {
-      const chirp = await chirpQueries.getChirp(req.params.chirpId);
+    const { chirpId } = req.params;
+
+    let authorId = "";
+    let authorIdQuery = req.query.authorId;
+    if (typeof authorIdQuery === "string") {
+      authorId = authorIdQuery;
+    }
+
+    let sort: "asc" | "desc" = "asc";
+    let sortQuery = req.query.sort;
+    if (sortQuery === "asc" || sortQuery === "desc") {
+      sort = sortQuery
+    }
+
+    if (chirpId instanceof Array) {
+      throw new BadRequestsError("cannot have more than one chirpId parameters");
+    } else if (chirpId) {
+      const chirp = await chirpQueries.getChirp(chirpId);
       if (chirp) {
         res.status(200).send(chirp);
       } else {
-        res.status(404).send();
+        throw new NotFoundError("chirp not found")
       }
     } else {
-      const chirps = await chirpQueries.getChirps();
-      res.status(200).send(chirps);
+      if (authorId) {
+        const chirps = await chirpQueries.getChirpsByAuthor(authorId, sort);
+        res.status(200).send(chirps);
+      } else {
+        const chirps = await chirpQueries.getChirps(sort);
+        res.status(200).send(chirps);
+      }
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function deleteChirp(req: Request, res: Response, next: NextFunction) {
+  res.set("Content-Type", "application/json");
+
+  try {
+    const { chirpId } = req.params;
+    if (chirpId instanceof Array) {
+      throw new BadRequestsError("cannot have more than one chirpId parameters");
+    } else if (chirpId) {
+      const accessToken = getBearerToken(req);
+      const userId = validateJWTandReturnUserID(accessToken, config.JWTSecret);
+      const chirp = await chirpQueries.getChirp(chirpId);
+      if (chirp) {
+        if (chirp.userId === userId) {
+          await chirpQueries.deleteChirp(chirp.id);
+          res.status(204).send(`Chirp delted successfully`);
+        } else {
+          throw new ForbiddenError("User does not have access to that chirp")
+        }
+      } else {
+        throw new NotFoundError("Chirp not found")
+      }
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function userLogin(req: Request, res: Response, next: NextFunction) {
+  res.set("Content-Type", "application/json");
+  type requestData = {
+    "password": string,
+    "email": string,
+  }
+
+  try {
+    const parsedBody: requestData = req.body;
+    const user: NewUser = await usersQueries.getUserByEmail(parsedBody.email)
+    const isCorrectUser = user ? await checkPasswordHash(parsedBody.password, user.hashedPassword!) : false;
+    if (!isCorrectUser) {
+      throw new UnauthorizedError("Incorrect email or password");
+    } else {
+      const jwtExpirationTime = 3600; // 1 hour
+      const jwtToken = makeJWT(user.id!, jwtExpirationTime, config.JWTSecret);
+
+      const refreshExpirationDate = new Date();
+      refreshExpirationDate.setDate(refreshExpirationDate.getDate() + 60);
+      const refreshToken: NewRefreshToken = {
+        userId: user.id!,
+        token: generateRefreshToken(),
+        expiresAt: refreshExpirationDate
+      }
+      await usersQueries.createRefreshToken(refreshToken)
+
+      const response = {
+        id: user.id,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+        email: user.email,
+        token: jwtToken,
+        refreshToken: refreshToken.token,
+        isChirpyRed: user.isChirpyRed
+      }
+      res.status(200).send(response);
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getAccessTokenFromRefreshToken(req: Request, res: Response, next: NextFunction) {
+  res.set("Content-Type", "application/json");
+
+  try {
+    const bearerToken = getBearerToken(req);
+    const refreshToken: NewRefreshToken = await usersQueries.getRefreshToken(bearerToken);
+    if (refreshToken && refreshToken.expiresAt >= new Date() && !refreshToken.revokedAt) {
+      const accessToken = makeJWT(refreshToken.userId, 3600, config.JWTSecret);
+      const response = {
+        token: accessToken
+      }
+      res.status(200).send(response);
+    } else {
+      throw new UnauthorizedError("Unauthorized: Refresh token expired, revoked or invalid");
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function revokeRefreshToken(req: Request, res: Response, next: NextFunction) {
+  res.set("Content-Type", "application/json");
+  try {
+    const bearerToken = getBearerToken(req);
+    const revokedToken = await usersQueries.revokeRefreshToken(bearerToken);
+    if (!revokedToken) {
+      throw new UnauthorizedError("Unauthorized: Refresh token invalid");
+    }
+    res.status(204).send();
+  } catch (err) {
+    next(err)
+  }
+}
+
+async function upgradeUser(req: Request, res: Response, next: NextFunction) {
+  res.set("Content-Type", "application/json");
+  try {
+    type RequestData = {
+      event: string,
+      data: {
+        userId: string
+      }
+    }
+
+    const requestParsed: RequestData = req.body;
+
+    if (requestParsed.event !== "user.upgraded") {
+      res.status(204).send("upgradeUser webhook did not receive correct request")
+    } else {
+      if (getAPIKey(req) !== config.apiConfig.polkaKey) {
+        throw new UnauthorizedError(`Request key: ${getAPIKey(req)} Correct key: ${config.apiConfig.polkaKey}`);
+      } else {
+        const upgradedUser = await usersQueries.upgradeUser(requestParsed.data.userId);
+        if (upgradedUser) {
+          res.status(204).send();
+        } else {
+          throw new NotFoundError("didn't find the user that needed to upgrade");
+        }
+      }
     }
   } catch (err) {
     next(err);

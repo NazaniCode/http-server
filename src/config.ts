@@ -14,8 +14,9 @@ export function envOrThrow(key: string): string {
 
 
 type APIConfig = {
-  fileserverHits: number;
-  platform: string
+  fileserverHits: number,
+  platform: string,
+  polkaKey: string
 };
 
 type DBConfig = {
@@ -25,12 +26,14 @@ type DBConfig = {
 
 type Config = {
   apiConfig: APIConfig,
-  dbConfig: DBConfig
+  dbConfig: DBConfig,
+  JWTSecret: string,
 }
 
 const apiConfig: APIConfig = {
   fileserverHits: 0,
   platform: envOrThrow("PLATFORM"),
+  polkaKey: envOrThrow("POLKA_KEY")
 };
 
 const migrationConfig: MigrationConfig = {
@@ -44,5 +47,6 @@ const dbConfig: DBConfig = {
 
 export const config: Config = {
   apiConfig: apiConfig,
-  dbConfig: dbConfig
+  dbConfig: dbConfig,
+  JWTSecret: envOrThrow("JWT_SECRET"),
 }

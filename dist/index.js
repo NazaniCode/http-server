@@ -1,6 +1,6 @@
 import express from "express";
 import { config } from './config.js';
-import { BadRequestsError } from "./errors.js";
+import { BadRequestsError, UnauthorizedError, ForbiddenError, NotFoundError } from "./errors.js";
 import { apiRouter } from "./apiEndpoints.js";
 import postgres from "postgres";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -36,6 +36,15 @@ function errorHandler(err, req, res, next) {
     console.log(err);
     if (err instanceof BadRequestsError) {
         res.status(400).send({ "error": `${err.message}` });
+    }
+    if (err instanceof UnauthorizedError) {
+        res.status(401).send({ "error": `${err.message}` });
+    }
+    if (err instanceof ForbiddenError) {
+        res.status(403).send({ "error": `${err.message}` });
+    }
+    if (err instanceof NotFoundError) {
+        res.status(404).send({ "error": `${err.message}` });
     }
     res.status(500).send();
 }
